@@ -68,6 +68,10 @@ public class MainActivity extends AppCompatActivity {
 
     private boolean temp;
 
+    // Guards the one-time status re-render after the async loadStatus() finishes.
+    // Persisted across recreate() so it only fires once per launch (no loop).
+    private boolean tweakStatusRefreshed;
+
     private static Context mContext;
     private ImageView noSpeedRestrictionsStatus;
     private ImageView taplimitstatus;
@@ -127,6 +131,8 @@ public class MainActivity extends AppCompatActivity {
     private Button declineSmsTweak;
     private Button uxprototypeButton;
     private Button materialYouButton;
+    private Button disableWeatherButton;
+    private ImageView disableWeatherStatus;
     private boolean animationRun;
     private boolean  urlprototype;
 
@@ -146,7 +152,11 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
 
         super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
 
+        if (savedInstanceState != null) {
+            tweakStatusRefreshed = savedInstanceState.getBoolean("tweakStatusRefreshed", false);
+        }
 
         Bundle extras = new Bundle()    ;
 
@@ -190,16 +200,6 @@ public class MainActivity extends AppCompatActivity {
             builder2.show();
         }
 
-
-
-
-
-
-
-
-
-        setContentView(R.layout.activity_main);
-
         ImageView revertNotificationDuration = findViewById(R.id.revert_hun_throttling);
         ImageView revertMediaNotificationDuration = findViewById(R.id.revert_media_hun);
         ImageView revertWifiBitrate = findViewById(R.id.revert_bitrate_wifi);
@@ -241,16 +241,21 @@ public class MainActivity extends AppCompatActivity {
 
 
 
-        TextView logs = initiateLogsText();
+        final TextView logs = initiateLogsText();
 
-        appendText(logs, runSuWithCmd(
-                path + "/sqlite3 -batch /data/data/com.google.android.gms/databases/phenotype.db " +
-                        "'SELECT * FROM FlagOverrides;'"
-        ).getStreamLogsWithLabels());
-        appendText(logs, runSuWithCmd(
-                path + "/sqlite3 -batch /data/data/com.google.android.gms/databases/phenotype.db " +
-                        "'SELECT * FROM sqlite_master WHERE type=\"trigger\";'"
-        ).getStreamLogsWithLabels());
+        new Thread() {
+            @Override
+            public void run() {
+                appendText(logs, runSuWithCmd(
+                        path + "/sqlite3 -batch /data/data/com.google.android.gms/databases/phenotype.db " +
+                                "'SELECT * FROM FlagOverrides;'"
+                ).getStreamLogsWithLabels());
+                appendText(logs, runSuWithCmd(
+                        path + "/sqlite3 -batch /data/data/com.google.android.gms/databases/phenotype.db " +
+                                "'SELECT * FROM sqlite_master WHERE type=\"trigger\";'"
+                ).getStreamLogsWithLabels());
+            }
+        }.start();
 
 
         animationRun = false;
@@ -317,7 +322,7 @@ public class MainActivity extends AppCompatActivity {
                             changeStatus(noSpeedRestrictionsStatus, 0, true);
                             showRebootButton();
                         } else {
-                            patchforspeed(UserCount);
+                            patchforspeed(0);
                         }
                     }
                 });
@@ -586,7 +591,54 @@ public class MainActivity extends AppCompatActivity {
 
         setOnLongClickListener(materialYouButton, R.string.tutorial_materialyou, R.drawable.tutorial_materialyou);
 
+        nospeed = findViewById(R.id.nospeed);
+        noSpeedRestrictionsStatus = findViewById(R.id.speedhackstatus);
+        if (load("aa_speed_hack")) {
+            nospeed.setText(getString(R.string.re_enable_tweak_string) + getString(R.string.disable_driving_restrictions));
+            changeStatus(noSpeedRestrictionsStatus, 2, false);
+        } else {
+            nospeed.setText(getString(R.string.disable_tweak_string) + getString(R.string.disable_driving_restrictions));
+            changeStatus(noSpeedRestrictionsStatus, 0, false);
+        }
+        nospeed.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                if (load("aa_speed_hack")) {
+                    revert("aa_speed_hack");
+                    nospeed.setText(getString(R.string.disable_tweak_string) + getString(R.string.disable_driving_restrictions));
+                    changeStatus(noSpeedRestrictionsStatus, 0, true);
+                    showRebootButton();
+                } else {
+                    patchforspeed(0);
+                }
+            }
+        });
+        setOnLongClickListener(nospeed, R.string.tutorial_disable_driving_restrictions);
 
+        disableWeatherButton = findViewById(R.id.disableweather_button);
+        disableWeatherStatus = findViewById(R.id.disableweatherstatus);
+        if (load("aa_weather_disable")) {
+            disableWeatherButton.setText(getString(R.string.re_enable_tweak_string) + getString(R.string.disable_weather_widget));
+            changeStatus(disableWeatherStatus, 2, false);
+        } else {
+            disableWeatherButton.setText(getString(R.string.disable_tweak_string) + getString(R.string.disable_weather_widget));
+            changeStatus(disableWeatherStatus, 0, false);
+        }
+        disableWeatherButton.setOnClickListener(
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View view) {
+                        if (load("aa_weather_disable")) {
+                            revert("aa_weather_disable");
+                            disableWeatherButton.setText(getString(R.string.disable_tweak_string) + getString(R.string.disable_weather_widget));
+                            changeStatus(disableWeatherStatus, 0, true);
+                            showRebootButton();
+                        } else {
+                            disableWeatherWidget();
+                        }
+                    }
+                });
+        setOnLongClickListener(disableWeatherButton, R.string.tutorial_disable_weather_widget);
 
         batteryoutline = findViewById(R.id.battoutline);
         batteryOutlineStatus = findViewById(R.id.batterystatus);
@@ -1565,80 +1617,67 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        switch (item.getItemId()) {
-            case R.id.copy:
-
-                final String title = "log";
-                StrictMode.ThreadPolicy policy = new StrictMode.ThreadPolicy.Builder().permitAll().build();
-                StrictMode.setThreadPolicy(policy);
-                final URL[] string = {null};
-                new Handler(Looper.getMainLooper()).post(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            final ClipboardManager clipboard = (ClipboardManager)
-                                    getSystemService(Context.CLIPBOARD_SERVICE);
-                            TextView textView = findViewById(R.id.logs);
-                            URL newstring = Pastebin.pastePaste(BuildConfig.PASTEBIN_API_KEY, String.valueOf(textView.getText()), title);
-                            Toast.makeText(getApplicationContext(), getString(R.string.copied_pastebin), Toast.LENGTH_LONG).show();
-                            ClipData clip = ClipData.newPlainText("logs", newstring.toString());
-                            clipboard.setPrimaryClip(clip);
-                        } catch (PasteException e) {
-                            e.printStackTrace();
-                            final ClipboardManager clipboard = (ClipboardManager)
-                                    getSystemService(Context.CLIPBOARD_SERVICE);
-                            TextView textView = findViewById(R.id.logs);
-                            Toast.makeText(getApplicationContext(), getString(R.string.log_copied), Toast.LENGTH_LONG).show();
-                            ClipData clip = ClipData.newPlainText("logs", textView.getText());
-                            clipboard.setPrimaryClip(clip);
-                        } catch (RuntimeException e) {
-                            e.printStackTrace();
-                            final ClipboardManager clipboard = (ClipboardManager)
-                                    getSystemService(Context.CLIPBOARD_SERVICE);
-
-                            Toast.makeText(getApplicationContext(), getString(R.string.log_copied), Toast.LENGTH_LONG).show();
-                            Toast.makeText(getApplicationContext(), getString(R.string.log_copied), Toast.LENGTH_LONG).show();
-                            TextView textView = findViewById(R.id.logs);
-
-                            ClipData clip = ClipData.newPlainText("logs", textView.getText());
-                            clipboard.setPrimaryClip(clip);
-                        }
+        int itemId = item.getItemId();
+        if (itemId == R.id.copy) {
+            final String title = "log";
+            StrictMode.ThreadPolicy policy = new StrictMode.ThreadPolicy.Builder().permitAll().build();
+            StrictMode.setThreadPolicy(policy);
+            final URL[] string = {null};
+            new Handler(Looper.getMainLooper()).post(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        final ClipboardManager clipboard = (ClipboardManager)
+                                getSystemService(Context.CLIPBOARD_SERVICE);
+                        TextView textView = findViewById(R.id.logs);
+                        URL newstring = Pastebin.pastePaste(BuildConfig.PASTEBIN_API_KEY, String.valueOf(textView.getText()), title);
+                        Toast.makeText(getApplicationContext(), getString(R.string.copied_pastebin), Toast.LENGTH_LONG).show();
+                        ClipData clip = ClipData.newPlainText("logs", newstring.toString());
+                        clipboard.setPrimaryClip(clip);
+                    } catch (PasteException e) {
+                        e.printStackTrace();
+                        final ClipboardManager clipboard = (ClipboardManager)
+                                getSystemService(Context.CLIPBOARD_SERVICE);
+                        TextView textView = findViewById(R.id.logs);
+                        Toast.makeText(getApplicationContext(), getString(R.string.log_copied), Toast.LENGTH_LONG).show();
+                        ClipData clip = ClipData.newPlainText("logs", textView.getText());
+                        clipboard.setPrimaryClip(clip);
+                    } catch (RuntimeException e) {
+                        e.printStackTrace();
+                        final ClipboardManager clipboard = (ClipboardManager)
+                                getSystemService(Context.CLIPBOARD_SERVICE);
+                        Toast.makeText(getApplicationContext(), getString(R.string.log_copied), Toast.LENGTH_LONG).show();
+                        TextView textView = findViewById(R.id.logs);
+                        ClipData clip = ClipData.newPlainText("logs", textView.getText());
+                        clipboard.setPrimaryClip(clip);
                     }
-                });
-
-
-
-
-                break;
-
-            case R.id.about:
-                DialogFragment aboutDialog = new AboutDialog();
-                aboutDialog.show(getSupportFragmentManager(), "AboutDialog");
-                break;
-
-            case R.id.revert_everything:
-                final android.support.v7.app.AlertDialog.Builder builder = new android.support.v7.app.AlertDialog.Builder(MainActivity.this);
-                builder.setMessage(getString(R.string.revert_everything_dialog))
-                        .setPositiveButton(getString(android.R.string.ok), new DialogInterface.OnClickListener() {
-                            public void onClick(DialogInterface dialog, int id) {
-                                getAndRemoveOptionsSelected();
-                            }
-                        })
-                        .setNegativeButton(getString(android.R.string.cancel), new DialogInterface.OnClickListener() {
-                            public void onClick(DialogInterface dialog, int id) {
-                                dialog.cancel();
-                            }
-                        });
-                builder.setCancelable(true);
-                android.support.v7.app.AlertDialog Alert1 = builder.create();
-                Alert1.show();
-                break;
-            case R.id.aa_settings:
-                String packageName = "com.google.android.projection.gearhead";
-                openApp(getApplicationContext(), packageName);
-
-            default:
-                return super.onOptionsItemSelected(item);
+                }
+            });
+        } else if (itemId == R.id.about) {
+            DialogFragment aboutDialog = new AboutDialog();
+            aboutDialog.show(getSupportFragmentManager(), "AboutDialog");
+        } else if (itemId == R.id.revert_everything) {
+            final android.support.v7.app.AlertDialog.Builder builder = new android.support.v7.app.AlertDialog.Builder(MainActivity.this);
+            builder.setMessage(getString(R.string.revert_everything_dialog))
+                    .setPositiveButton(getString(android.R.string.ok), new DialogInterface.OnClickListener() {
+                        public void onClick(DialogInterface dialog, int id) {
+                            getAndRemoveOptionsSelected();
+                        }
+                    })
+                    .setNegativeButton(getString(android.R.string.cancel), new DialogInterface.OnClickListener() {
+                        public void onClick(DialogInterface dialog, int id) {
+                            dialog.cancel();
+                        }
+                    });
+            builder.setCancelable(true);
+            android.support.v7.app.AlertDialog Alert1 = builder.create();
+            Alert1.show();
+        } else if (itemId == R.id.aa_settings) {
+            String packageName = "com.google.android.projection.gearhead";
+            openApp(getApplicationContext(), packageName);
+            return super.onOptionsItemSelected(item);
+        } else {
+            return super.onOptionsItemSelected(item);
         }
         return true;
     }
@@ -1678,6 +1717,12 @@ public class MainActivity extends AppCompatActivity {
     public float loadFloat(String key) {
         SharedPreferences sharedPreferences = getPreferences(Context.MODE_PRIVATE);
         return sharedPreferences.getFloat(key, 0);
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putBoolean("tweakStatusRefreshed", tweakStatusRefreshed);
     }
 
     @Override
@@ -1811,7 +1856,7 @@ public class MainActivity extends AppCompatActivity {
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -1898,7 +1943,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -1934,6 +1979,28 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
             finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"VisualPreview__unchained_experiment_id\",\"\" ,1,0);");
             finalCommand.append(System.getProperty("line.separator"));
             finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, extensionVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"GearSnacks__parked_gears\",\"\" ,\"999\",0);");
+            finalCommand.append(System.getProperty("line.separator"));
+            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"ContentBrowse__keyboard_force_disabled\",\"\" ,0,0);");
+            finalCommand.append(System.getProperty("line.separator"));
+            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"ContentBrowse__sixtap_force_enabled\",\"\" ,0,0);");
+            finalCommand.append(System.getProperty("line.separator"));
+            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"ContentBrowse__enable_speed_bump_projected\",\"\" ,0,0);");
+            finalCommand.append(System.getProperty("line.separator"));
+            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"ContentBrowse__speedbump_force_enabled\",\"\" ,0,0);");
+            finalCommand.append(System.getProperty("line.separator"));
+            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, intVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"ContentBrowse__drawer_default_allowed_taps_touchpad\",\"\" ,999,0);");
+            finalCommand.append(System.getProperty("line.separator"));
+            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Dialer__speedbump_enabled\",\"\" ,0,0);");
+            finalCommand.append(System.getProperty("line.separator"));
+            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Mesquite__speedbump_enabled\",\"\" ,0,0);");
+            finalCommand.append(System.getProperty("line.separator"));
+            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"McFly__speedbump_enabled\",\"\" ,0,0);");
+            finalCommand.append(System.getProperty("line.separator"));
+            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Media__projected_speedbump_enabled\",\"\" ,0,0);");
+            finalCommand.append(System.getProperty("line.separator"));
+            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Watevra__speedbump_enabled\",\"\" ,0,0);");
+            finalCommand.append(System.getProperty("line.separator"));
+            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Coolwalk__allow_all_inputs_kill_switch\",\"\" ,1,0);");
             finalCommand.append(System.getProperty("line.separator"));
 
         new Thread() {
@@ -1986,7 +2053,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -1994,6 +2061,89 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
                     final DialogFragment notSuccessfulDialog = new NotSuccessfulDialog();
                     Bundle bundle = new Bundle();
                     bundle.putString("tweak", "aa_speed_hack");
+                    bundle.putString("log", logs.getText().toString());
+                    notSuccessfulDialog.setArguments(bundle);
+                    notSuccessfulDialog.show(getSupportFragmentManager(), "NotSuccessfulDialog");
+                }
+            }
+        }.start();
+    }
+
+    public void disableWeatherWidget() {
+        final TextView logs = initiateLogsText();
+
+        final ProgressDialog dialog = ProgressDialog.show(MainActivity.this, "",
+                getString(R.string.tweak_loading), true);
+
+        final StringBuilder finalCommand = new StringBuilder();
+
+        finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Weather__enabled\",\"\" ,0,0);");
+        finalCommand.append(System.getProperty("line.separator"));
+        finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Weather__icon_enabled\",\"\" ,0,0);");
+        finalCommand.append(System.getProperty("line.separator"));
+        finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Weather__preinstalled_frx_toggle_enabled\",\"\" ,0,0);");
+        finalCommand.append(System.getProperty("line.separator"));
+        // Modern (Coolwalk/Hero, AA 12.x+) weather-card kill switches. The legacy
+        // Weather__enabled flags above no longer drive the dashboard tile on current
+        // Android Auto; the tile is now part of the "Hero" portrait dashboard.
+        finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"HeroFeature__show_weather_by_default_on_portrait_kill_switch\",\"\" ,0,0);");
+        finalCommand.append(System.getProperty("line.separator"));
+        finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName,  flagType, name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Weather__enable_on_all_screens\",\"\" ,0,0);");
+        finalCommand.append(System.getProperty("line.separator"));
+
+        new Thread() {
+            @Override
+            public void run() {
+                String path = getApplicationInfo().dataDir;
+                suitableMethodFound = true;
+                killps(logs);
+                String currentOwner = runSuWithCmd("stat -c \"%U\" /data/data/com.google.android.gms/databases/phenotype.db").getInputStreamLog();
+                String currentPolicy = gainOwnership(logs);
+
+                if (suitableMethodFound) {
+                    appendText(logs, "\n\n--  run SQL method   --");
+                    appendText(logs, runSuWithCmd(
+                            path + "/sqlite3 -batch /data/data/com.google.android.gms/databases/phenotype.db " +
+                                    "'DROP TRIGGER IF EXISTS aa_weather_disable;\n" + finalCommand + "'"
+                    ).getStreamLogsWithLabels());
+
+                    appendText(logs, runSuWithCmd(
+                            path + "/sqlite3 -batch /data/data/com.google.android.gms/databases/phenotype.db " +
+                                    "'CREATE TRIGGER aa_weather_disable AFTER DELETE\n" +
+                                    "On FlagOverrides\n" +
+                                    "BEGIN\n" + finalCommand + "END;'\n"
+                    ).getStreamLogsWithLabels());
+                    if (runSuWithCmd(path + "/sqlite3 -batch /data/data/com.google.android.gms/databases/phenotype.db " + "'SELECT name FROM sqlite_master WHERE type=\"trigger\" AND name=\"aa_weather_disable\";'").getInputStreamLog().length() <= 4) {
+                        suitableMethodFound = false;
+                    } else {
+                        appendText(logs, "\n--  end SQL method   --");
+                        save(true, "aa_weather_disable");
+                        new Handler(Looper.getMainLooper()).post(new Runnable() {
+                            @Override
+                            public void run() {
+                                changeStatus(disableWeatherStatus, 1, true);
+                                showRebootButton();
+                                disableWeatherButton.setText(getString(R.string.re_enable_tweak_string) + getString(R.string.disable_weather_widget));
+                            }
+                        });
+                    }
+                }
+                dialog.dismiss();
+
+                appendText(logs, "\n\n--  restoring Google Play Services   --");
+                appendText(logs, runSuWithCmd("pm enable com.google.android.gms").getStreamLogsWithLabels());
+
+                appendText(logs, "\n\n--  Restoring ownership of the database   --");
+                appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
+
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
+                    appendText(logs, "\n\n--  Restoring SELINUX   --");
+                    appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
+                }
+                if (!suitableMethodFound) {
+                    final DialogFragment notSuccessfulDialog = new NotSuccessfulDialog();
+                    Bundle bundle = new Bundle();
+                    bundle.putString("tweak", "aa_weather_disable");
                     bundle.putString("log", logs.getText().toString());
                     notSuccessfulDialog.setArguments(bundle);
                     notSuccessfulDialog.show(getSupportFragmentManager(), "NotSuccessfulDialog");
@@ -2077,7 +2227,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -2223,7 +2373,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -2302,7 +2452,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -2382,7 +2532,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -2459,7 +2609,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -2494,7 +2644,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
             finalCommand.append(System.getProperty("line.separator"));
             finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName, flagType,  name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Coolwalk__media_rec_card_enabled\", \"\" ,1,0);");
             finalCommand.append(System.getProperty("line.separator"));
-            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName, flagType,  name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Coolwalk__opt_in _default\", \"\" ,1,0);");
+            finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName, flagType,  name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Coolwalk__opt_in_default\", \"\" ,1,0);");
             finalCommand.append(System.getProperty("line.separator"));
             finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName, flagType,  name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Coolwalk__rail_dock_enabled\", \"\" ,1,0);");
             finalCommand.append(System.getProperty("line.separator"));
@@ -2646,7 +2796,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -2681,7 +2831,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
         finalCommand.append(System.getProperty("line.separator"));
         finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName, flagType,  name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Coolwalk__media_rec_card_enabled\", \"\" ,0,0);");
         finalCommand.append(System.getProperty("line.separator"));
-        finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName, flagType,  name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Coolwalk__opt_in _default\", \"\" ,0,0);");
+        finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName, flagType,  name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Coolwalk__opt_in_default\", \"\" ,0,0);");
         finalCommand.append(System.getProperty("line.separator"));
         finalCommand.append("INSERT OR REPLACE INTO FlagOverrides (packageName, flagType,  name, user, boolVal, committed) VALUES (\"com.google.android.projection.gearhead\",  0,\"Coolwalk__rail_dock_enabled\", \"\" ,0,0);");
         finalCommand.append(System.getProperty("line.separator"));
@@ -2785,7 +2935,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -2863,7 +3013,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -2942,7 +3092,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -3022,7 +3172,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -3098,7 +3248,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -3192,7 +3342,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -3365,7 +3515,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -3445,7 +3595,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -3520,7 +3670,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -3598,7 +3748,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -3689,7 +3839,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -3777,7 +3927,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -3854,7 +4004,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -3932,7 +4082,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -4071,7 +4221,7 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
 appendText(logs, "\n\n--  Restoring ownership of the database   --");
                 appendText(logs, runSuWithCmd("chown " + currentOwner + " /data/data/com.google.android.gms/databases/phenotype.db").getStreamLogsWithLabels());
 
-                if (currentPolicy.toLowerCase().equals("permissive")) {
+                if (!currentPolicy.toLowerCase().equals("permissive")) {
                     appendText(logs, "\n\n--  Restoring SELINUX   --");
                     appendText(logs, runSuWithCmd("setenforce 1").getStreamLogsWithLabels());
                 }
@@ -4149,28 +4299,42 @@ appendText(logs, "\n\n--  Restoring ownership of the database   --");
     }
 
     public void loadStatus(final String path) {
-
-        final ProgressDialog dialog = ProgressDialog.show(MainActivity.this, "",
-                getString(R.string.loading), true);
-
-        runOnUiThread(new Runnable() {
+        new Thread() {
             @Override
             public void run() {
                 String get_names = runSuWithCmd(
                         path + "/sqlite3 -batch /data/data/com.google.android.gms/databases/phenotype.db " +
                                 "'SELECT name FROM sqlite_master WHERE type=\"trigger\" AND tbl_name=\"FlagOverrides\";" +
                                 "SELECT name FROM sqlite_master WHERE type=\"trigger\" AND tbl_name=\"Flags\";" +
-
                                 "SELECT name FROM sqlite_master WHERE type=\"trigger\" AND tbl_name=\"Flags\" AND name=\"after_delete\";" +
                                 "SELECT name FROM sqlite_master WHERE type=\"trigger\" AND tbl_name=\"Flags\" AND name=\"aa_patched_apps\";'").getInputStreamLog();
-                String[] lines = get_names.split(System.getProperty("line.separator"));
+                final String[] lines = get_names.split(System.getProperty("line.separator"));
+                boolean foundActiveTweak = false;
                 for (int i = 0; i < lines.length; i++) {
                     save(true, lines[i]);
+                    if (lines[i] != null && !lines[i].trim().isEmpty()) {
+                        foundActiveTweak = true;
+                    }
                 }
-                dialog.dismiss();
+                // The tweak status icons are drawn synchronously in onCreate, before
+                // this background DB read finishes. After a reboot that race makes the
+                // icons show "disabled" even though the triggers are still installed —
+                // and the first tap then hits the revert branch (the "two taps to
+                // re-apply" symptom). Now that the real state is in SharedPreferences,
+                // re-render once so the icons match the database.
+                if (foundActiveTweak && !tweakStatusRefreshed && !isFinishing() && !isDestroyed()) {
+                    tweakStatusRefreshed = true;
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (!isFinishing() && !isDestroyed()) {
+                                recreate();
+                            }
+                        }
+                    });
+                }
             }
-        });
-
+        }.start();
     }
 
     public void getAndRemoveOptionsSelected() {

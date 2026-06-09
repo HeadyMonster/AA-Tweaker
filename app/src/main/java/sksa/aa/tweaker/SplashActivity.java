@@ -31,6 +31,7 @@ import sksa.aa.tweaker.Utils.Version;
 
 import static sksa.aa.tweaker.MainActivity.runSuWithCmd;
 
+
 public class SplashActivity extends AppCompatActivity {
 
 
@@ -38,18 +39,25 @@ public class SplashActivity extends AppCompatActivity {
     String newVersionName;
 
     private static final String actualVersion = BuildConfig.VERSION_NAME;
-    private static final String BASE_URL = "https://api.github.com/repos/shmykelsa/AA-Tweaker/releases/latest";
+    private static final String BASE_URL = "https://api.github.com/repos/headymonster/aa-tweaker/releases/latest";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // Install the process-wide crash reporter before anything else so it
+        // catches crashes in this activity AND in MainActivity.onCreate.
+        CrashHandler.install(this);
+
         setContentView(R.layout.activity_splash);
+
+        // If the previous run crashed, surface the full stack trace now.
+        showPendingCrashIfAny();
 
         final Intent intent = new Intent(this, MainActivity.class);
 
         final NoRootDialog noRootDialog = new NoRootDialog();
-        final StreamLogs isDeviceRooted =  runSuWithCmd("echo 1");
+        final StreamLogs[] rootResult = {new StreamLogs()};
 
         copyAssets();
 
@@ -81,6 +89,8 @@ public class SplashActivity extends AppCompatActivity {
         editor.putBoolean("uxprototype_tweak", false);
         editor.putBoolean("aa_material_you", false);
         editor.putBoolean("aa_vertical_bar", false);
+        editor.putBoolean("aa_speed_hack", false);
+        editor.putBoolean("aa_weather_disable", false);
         editor.commit();
 
         requestLatest();
@@ -89,17 +99,20 @@ public class SplashActivity extends AppCompatActivity {
 
         final Button continueButton = findViewById(R.id.proceed_button);
         continueButton.setEnabled(false);
-        Log.v("sksa.aa.tweaker", "Engaging countdown");
-        new CountDownTimer(5000, 10) {
-            public void onTick(long millisUntilFinished) {
-                int secondsRemaining = (int) ( 1 + (millisUntilFinished/1000));
-                continueButton.setText(getString(R.string.proceed) + " (" + secondsRemaining + ")");
-            }
 
+        // Root check runs off the main thread so it never blocks the UI.
+        new Thread() {
             @Override
-            public void onFinish() {
-                continueButton.setEnabled(true);
-                continueButton.setText(R.string.proceed);
+            public void run() {
+                rootResult[0] = runSuWithCmd("echo 1");
+                // Enable the button as soon as we know root status
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        continueButton.setEnabled(true);
+                        continueButton.setText(R.string.proceed);
+                    }
+                });
             }
         }.start();
 
@@ -107,19 +120,66 @@ public class SplashActivity extends AppCompatActivity {
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View view) {
-                        if (isDeviceRooted.getInputStreamLog().equals("1")) {
-                            if (newVersionName != null) {
-                                intent.putExtra("NewVersionName", newVersionName);
+                        try {
+                            if (rootResult[0].getInputStreamLog().equals("1")) {
+                                if (newVersionName != null) {
+                                    intent.putExtra("NewVersionName", newVersionName);
+                                }
+                                startActivity(intent);
+                                finish();
+                            } else {
+                                noRootDialog.show(getSupportFragmentManager(), "NoRootDialog");
                             }
-                            startActivity(intent);
-                            finish();
-                        } else {
-                            noRootDialog.show(getSupportFragmentManager(), "NoRootDialog");
+                        } catch (Exception e) {
+                            Log.e("sksa.aa.tweaker", "Crash on proceed: " + e.getMessage(), e);
+                            Toast.makeText(SplashActivity.this,
+                                    "Crash: " + e.getClass().getSimpleName() + ": " + e.getMessage(),
+                                    Toast.LENGTH_LONG).show();
                         }
                     }
                 });
     }
 
+
+    /** Shows the persisted stack trace from the last crash, if there is one. */
+    private void showPendingCrashIfAny() {
+        SharedPreferences prefs = getSharedPreferences(CrashHandler.PREFS, MODE_PRIVATE);
+        final String trace = prefs.getString(CrashHandler.KEY_TRACE, null);
+        if (trace == null) {
+            return;
+        }
+        String threadName = prefs.getString(CrashHandler.KEY_THREAD, "?");
+
+        // Clear it so it only shows once.
+        prefs.edit().clear().commit();
+
+        final String report = "Thread: " + threadName + "\n\n" + trace;
+
+        android.widget.TextView tv = new android.widget.TextView(this);
+        tv.setText(report);
+        tv.setTextIsSelectable(true);
+        tv.setPadding(48, 32, 48, 32);
+        tv.setTextSize(11);
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.addView(tv);
+
+        new android.support.v7.app.AlertDialog.Builder(this)
+                .setTitle("Last crash report")
+                .setView(scroll)
+                .setPositiveButton("Copy", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        android.content.ClipboardManager cm =
+                                (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                        if (cm != null) {
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("crash", report));
+                            Toast.makeText(SplashActivity.this, "Crash report copied", Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                })
+                .setNegativeButton("Dismiss", null)
+                .show();
+    }
 
     private void copyFile(InputStream in, OutputStream out) throws IOException {
         byte[] buffer = new byte[1024];
@@ -161,7 +221,8 @@ public class SplashActivity extends AppCompatActivity {
             } catch (IOException e) {
                 Log.e("sksa.aa.tweaker", "Failed to copy asset file: sqlite3", e);
             }
-            Log.v("sksa.aa.tweaker", runSuWithCmd("chmod 777 " + path + "/sqlite3").getStreamLogsWithLabels());
+            new File(path, "sqlite3").setExecutable(true, false);
+            Log.v("sksa.aa.tweaker", "sqlite3 copied and marked executable");
 
     }
 
